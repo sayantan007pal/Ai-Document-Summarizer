@@ -5,6 +5,8 @@
 ## Overview
 This project is an **AI-Powered Document Summarizer & Q&A App** built using **React**, **CopilotKit**, and **Node.js**. It allows users to upload PDF files, extract their content, and ask questions about the uploaded document in a conversational interface. The app provides an interactive and user-friendly way to interact with large documents without reading them manually.
 
+youtube link :-  https://youtu.be/0n56tHM4EYs
+
 ---
 
 ## Key Features
