@@ -193,12 +193,6 @@ class ResumeParser:
                 unique_names.append(name)
         
         return unique_names[:5]  # Return top 5 most likely names
-        unique_names = []
-        for name in names:
-            if name not in unique_names and self.is_likely_person_name(name):
-                unique_names.append(name)
-        
-        return unique_names[:5]  # Return top 5 most likely names
     
     def is_likely_person_name(self, name):
         """Check if a string is likely to be a person's name"""
@@ -261,12 +255,28 @@ class ResumeParser:
             'deloitte', 'pwc', 'kpmg', 'ey', 'mckinsey', 'bain', 'bcg'
         }
         
-        # Check if any word is a job title, technical term, location, or company
+        # Resume section headers to exclude
+        section_headers = {
+            'profile', 'summary', 'objective', 'experience', 'education', 'skills',
+            'achievements', 'projects', 'certifications', 'awards', 'references',
+            'interests', 'hobbies', 'languages', 'career', 'professional', 'personal',
+            'work', 'employment', 'academic', 'qualifications', 'training', 'courses'
+        }
+        
+        # Check if any word is a job title, technical term, location, company, or section header
         for word in words:
             word_lower = word.lower()
             if (word_lower in job_titles or word_lower in tech_terms or 
-                word_lower in locations or word_lower in companies):
+                word_lower in locations or word_lower in companies or 
+                word_lower in section_headers):
                 return False
+        
+        # Check for common section header patterns
+        name_lower = name.lower()
+        section_patterns = ['profile summary', 'career objective', 'work experience', 
+                           'professional experience', 'personal details', 'contact information']
+        if any(pattern in name_lower for pattern in section_patterns):
+            return False
         
         # Check for common location patterns
         name_lower = name.lower()
@@ -297,73 +307,19 @@ class ResumeParser:
         if not names:
             return None
         
+        # If names come from the enhanced extraction, they're already sorted by priority
+        # So we prioritize the first valid name, but still apply some filtering
+        
         # Filter out names that are clearly not person names
         filtered_names = [name for name in names if self.is_likely_person_name(name)]
         
         if not filtered_names:
-            return None
+            # If no names pass the filter, return the first name from the original list
+            # as the enhanced extraction already prioritized them
+            return names[0] if names else None
         
-        # Score names based on various criteria
-        scored_names = []
-        for name in filtered_names:
-            score = 0
-            words = name.split()
-            name_lower = name.lower()
-            
-            # Prefer names with 2-3 parts (first + last, or first + middle + last)
-            if len(words) == 2:
-                score += 15  # Increased score for first+last pattern
-            elif len(words) == 3:
-                score += 12
-            elif len(words) == 4:
-                score += 8
-            
-            # Prefer names where each part is a reasonable length
-            avg_length = sum(len(word) for word in words) / len(words)
-            if 3 <= avg_length <= 10:
-                score += 8
-            
-            # Heavily penalize location names
-            location_indicators = ['west', 'bengal', 'government', 'engineering', 'university', 'college', 'institute']
-            if any(indicator in name_lower for indicator in location_indicators):
-                score -= 50  # Heavy penalty
-            
-            # Heavily penalize organization/company names
-            org_indicators = ['quest', 'quine', 'communication', 'technology', 'electronics', 'prism', 'recruit']
-            if any(indicator in name_lower for indicator in org_indicators):
-                score -= 40
-            
-            # Bonus for common Indian name patterns
-            if len(words) == 2:
-                first, last = words
-                # Common Indian first names (partial list)
-                indian_first_names = ['sayantan', 'rohit', 'amit', 'rajesh', 'priya', 'anita', 'vikash', 'deepak']
-                if first.lower() in indian_first_names:
-                    score += 20
-                
-                # Common Indian last names (partial list)
-                indian_last_names = ['pal', 'sharma', 'gupta', 'singh', 'kumar', 'joshi', 'patel', 'shah']
-                if last.lower() in indian_last_names:
-                    score += 15
-            
-            # Prefer names that appear early in the document (likely to be the person's name)
-            # This would require the original text, but we can approximate
-            if 'sayantan' in name_lower:  # Give bonus to names containing common first names
-                score += 25
-            
-            # Penalize names that are too generic or too specific
-            if name_lower in ['data science', 'machine learning', 'computer science']:
-                score -= 30
-            
-            scored_names.append((score, name))
-        
-        # Return the highest scoring name
-        scored_names.sort(reverse=True, key=lambda x: x[0])
-        
-        # Debug: print scores (remove in production)
-        print(f"Name scores: {scored_names}")
-        
-        return scored_names[0][1] if scored_names[0][0] > 0 else None
+        # Return the first filtered name (highest priority from enhanced extraction)
+        return filtered_names[0]
     
     def select_best_phone(self, phones):
         """Select the most likely phone number from a list of candidates"""
@@ -491,7 +447,18 @@ class ResumeParser:
                 if self.is_likely_person_name(match):
                     names.append(match)
         
-        return list(set(names))
+        # Filter out common resume section headers
+        filtered_names = []
+        section_headers = ['profile summary', 'work experience', 'professional experience', 
+                          'education', 'skills', 'objective', 'summary', 'achievements',
+                          'career objective', 'personal details', 'references']
+        
+        for name in names:
+            name_lower = name.lower()
+            if not any(header in name_lower for header in section_headers):
+                filtered_names.append(name)
+        
+        return list(set(filtered_names))
     
     def extract_phones_aggressive(self, text):
         """More aggressive phone extraction for hard-to-parse documents"""
@@ -630,21 +597,104 @@ class ResumeParser:
         except Exception as e:
             raise Exception(f"Failed to parse document: {str(e)}")
     
+    def extract_document_text(self, file_path):
+        """Extract plain text from document (fallback method)"""
+        try:
+            result = self.converter.convert(file_path)
+            
+            # Extract plain text
+            if hasattr(result, 'document'):
+                text = result.document.export_to_markdown()
+            elif hasattr(result, 'text'):
+                text = result.text
+            elif hasattr(result, 'content'):
+                text = result.content
+            else:
+                text = str(result)
+            
+            return text
+        except Exception as e:
+            return ""
+    
+    def extract_text_with_formatting(self, file_path):
+        """Extract text with formatting information like font sizes from document"""
+        try:
+            result = self.converter.convert(file_path)
+            
+            # Extract plain text
+            if hasattr(result, 'document'):
+                text = result.document.export_to_markdown()
+            elif hasattr(result, 'text'):
+                text = result.text
+            elif hasattr(result, 'content'):
+                text = result.content
+            else:
+                text = str(result)
+            
+            # Extract formatting information from docling result
+            formatted_text = {}
+            
+            # Try to get structured content with formatting if available
+            if hasattr(result, 'document') and result.document and hasattr(result.document, 'body') and result.document.body:
+                formatted_text = self._extract_formatting_from_docling_body(result.document.body.children, text)
+            
+            return text, formatted_text
+            
+        except Exception as e:
+            # Fallback to plain text extraction
+            text = self.parse_document(file_path)
+            return text, {}
+    
+    def _extract_formatting_from_docling_body(self, elements, full_text):
+        """Extract formatting information from docling body elements"""
+        formatting_info = {}
+        line_number = 0
+        
+        try:
+            for element in elements:
+                if hasattr(element, 'text') and element.text:
+                    # Track line position
+                    line_number += element.text.count('\n') + 1
+                    
+                    # Extract font size if available
+                    font_size = None
+                    if hasattr(element, 'style') and element.style:
+                        if hasattr(element.style, 'font_size'):
+                            font_size = element.style.font_size
+                        elif hasattr(element.style, 'fontSize'):
+                            font_size = element.style.fontSize
+                    
+                    # Store formatting info
+                    if element.text.strip():
+                        formatting_info[element.text.strip()] = {
+                            'line_number': line_number,
+                            'font_size': font_size,
+                            'position': 'early' if line_number <= 10 else 'later'
+                        }
+                        
+                # Recursively process nested elements
+                if hasattr(element, 'children') and element.children:
+                    nested_info = self._extract_formatting_from_docling_body(element.children, full_text)
+                    formatting_info.update(nested_info)
+                    
+        except Exception as e:
+            # If formatting extraction fails, return empty dict
+            pass
+            
+        return formatting_info
+    
     def extract_candidate_info(self, file_path, filename):
         """Extract all candidate information from a resume file"""
         try:
-            # Parse document to get text
-            text = self.parse_document(file_path)
+            # Parse document to get text and formatting information
+            text, formatted_text = self.extract_text_with_formatting(file_path)
             
-            # Extract information with multiple attempts
-            names = self.extract_names(text)
+            # Extract information with multiple attempts, prioritizing font size and early position
+            names = self.extract_names_with_font_priority(text, formatted_text)
             emails = self.extract_email_addresses(text)
             phones = self.extract_phone_numbers(text)
             
-            # Try harder to find missing information
-            if not names:
-                names = self.extract_names_aggressive(text)
-            
+            # Try harder to find missing email and phone information
             if not emails:
                 emails = self.extract_emails_aggressive(text)
             
@@ -706,6 +756,106 @@ class ResumeParser:
                 'id': str(uuid.uuid4())
             }
 
+    def extract_names_with_font_priority(self, text, formatted_text=None):
+        """Extract names with font size and position prioritization"""
+        names = []
+        
+        # Start with regular name extraction
+        regular_names = self.extract_names(text)
+        names.extend(regular_names)
+        
+        # Add aggressive extraction if needed
+        if not names:
+            aggressive_names = self.extract_names_aggressive(text)
+            names.extend(aggressive_names)
+        
+        # Add fallback extraction
+        if not names:
+            fallback_names = self.extract_names_fallback(text)
+            names.extend(fallback_names)
+        
+        # Enhance names with formatting information
+        if formatted_text:
+            enhanced_names = []
+            for name in names:
+                name_info = {
+                    'name': name,
+                    'font_size': None,
+                    'line_number': None,
+                    'is_early': False,
+                    'score': 0
+                }
+                
+                # Look for formatting information
+                for text_chunk, format_info in formatted_text.items():
+                    if name.lower() in text_chunk.lower() or any(part.lower() in text_chunk.lower() for part in name.split()):
+                        name_info['font_size'] = format_info.get('font_size')
+                        name_info['line_number'] = format_info.get('line_number', 999)
+                        name_info['is_early'] = format_info.get('position') == 'early'
+                        break
+                
+                # Calculate priority score
+                name_info['score'] = self._calculate_name_score(name_info, text)
+                enhanced_names.append(name_info)
+            
+            # Sort by score (highest first) and return name strings
+            enhanced_names.sort(key=lambda x: x['score'], reverse=True)
+            return [info['name'] for info in enhanced_names]
+        
+        return names
+    
+    def _calculate_name_score(self, name_info, full_text):
+        """Calculate priority score for a name based on various factors"""
+        score = 0
+        name = name_info['name']
+        
+        # Base score for having a name
+        score += 10
+        
+        # Font size bonus (larger fonts get higher scores)
+        if name_info['font_size']:
+            try:
+                font_size = float(name_info['font_size'])
+                score += font_size * 2  # Larger fonts get significant bonus
+            except (ValueError, TypeError):
+                pass
+        
+        # Early position bonus (first 10 lines)
+        if name_info['is_early'] or (name_info['line_number'] and name_info['line_number'] <= 10):
+            score += 50
+        
+        # Position-based scoring
+        if name_info['line_number']:
+            if name_info['line_number'] <= 3:
+                score += 30  # Very early (likely header)
+            elif name_info['line_number'] <= 5:
+                score += 20  # Early
+            elif name_info['line_number'] <= 10:
+                score += 10  # Still early
+        
+        # Name quality scoring
+        parts = name.split()
+        if len(parts) >= 2:
+            score += 20  # Bonus for full names
+        if len(parts) >= 3:
+            score += 10  # Bonus for middle names
+        
+        # Penalize common words that aren't names
+        common_words = ['resume', 'cv', 'curriculum', 'profile', 'summary', 'objective']
+        if any(word.lower() in name.lower() for word in common_words):
+            score -= 30
+        
+        # Bonus for proper capitalization
+        if all(part[0].isupper() for part in parts if part):
+            score += 15
+        
+        # Check if name appears multiple times (likely important)
+        name_occurrences = full_text.lower().count(name.lower())
+        if name_occurrences > 1:
+            score += min(name_occurrences * 5, 20)  # Cap the bonus
+        
+        return score
+    
     def extract_names_fallback(self, text):
         """Fallback name extraction method"""
         lines = text.split('\n')
