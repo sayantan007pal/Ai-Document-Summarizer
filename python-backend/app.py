@@ -11,6 +11,7 @@ import csv
 import io
 import re
 import nltk
+import time
 from nltk.corpus import stopwords
 from docling.document_converter import DocumentConverter
 import json
@@ -116,7 +117,45 @@ class ResumeParser:
         """Extract email addresses"""
         pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
         emails = re.findall(pattern, text)
-        return list(set(emails))  # Remove duplicates
+        
+        # Filter out invalid emails
+        valid_emails = []
+        for email in emails:
+            if self.is_valid_personal_email(email):
+                valid_emails.append(email)
+        
+        return list(set(valid_emails))  # Remove duplicates
+    
+    def is_valid_personal_email(self, email):
+        """Check if email looks like a personal email, not system/technical email"""
+        if not email or len(email) < 5:
+            return False
+            
+        email_lower = email.lower()
+        
+        # Exclude system/technical emails
+        invalid_patterns = [
+            'mongodb.net', 'localhost', '127.0.0.1', 'test.com', 'example.com',
+            'noreply', 'no-reply', 'admin@', 'system@', 'root@', 'info@',
+            'support@', 'help@', 'contact@', 'sales@', 'marketing@'
+        ]
+        
+        for pattern in invalid_patterns:
+            if pattern in email_lower:
+                return False
+        
+        # Check for random/generated email patterns
+        local_part = email.split('@')[0]
+        
+        # Too many random characters or numbers
+        if len(re.findall(r'[0-9]', local_part)) > len(local_part) * 0.6:
+            return False
+            
+        # Too long random strings (likely generated)
+        if len(local_part) > 20 and not any(char.isalpha() for char in local_part[:10]):
+            return False
+            
+        return True
     
     def ie_preprocess(self, document):
         """Preprocess document for information extraction"""
@@ -177,7 +216,13 @@ class ResumeParser:
             'trainee', 'graduate', 'fresher', 'experienced', 'science', 'technology',
             'data', 'software', 'web', 'full', 'stack', 'backend', 'frontend',
             'mobile', 'ios', 'android', 'devops', 'cloud', 'machine', 'learning',
-            'artificial', 'intelligence', 'business', 'product', 'project'
+            'artificial', 'intelligence', 'business', 'product', 'project',
+            'warehouse', 'picker', 'cashier', 'customer', 'service', 'representative',
+            'sales', 'increasing', 'qualified', 'global', 'markets', 'foodspotting',
+            'call', 'logging', 'implementation', 'documentation', 'request',
+            'metadata', 'context', 'information', 'details', 'current', 'prompt',
+            'flow', 'visual', 'studio', 'code', 'module', 'globally', 'system',
+            'command', 'line', 'args'
         }
         
         # Technical terms to exclude
@@ -355,6 +400,312 @@ class ResumeParser:
         scored_phones.sort(reverse=True)
         return scored_phones[0][1]
     
+    def select_best_email(self, emails):
+        """Select the most likely email from a list of candidates"""
+        if not emails:
+            return None
+        
+        # Score emails based on various criteria
+        scored_emails = []
+        for email in emails:
+            score = 0
+            email_lower = email.lower()
+            
+            # Prefer personal emails over generic ones
+            if any(domain in email_lower for domain in ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com']):
+                score += 10
+            
+            # Prefer emails with actual names rather than random characters
+            local_part = email.split('@')[0]
+            if any(char.isalpha() for char in local_part):
+                score += 5
+            
+            # Penalize emails that look system-generated
+            if any(pattern in email_lower for pattern in ['test', 'example', 'noreply', 'admin']):
+                score -= 20
+            
+            scored_emails.append((score, email))
+        
+        # Return the highest scoring email
+        scored_emails.sort(reverse=True)
+        return scored_emails[0][1] if scored_emails else None
+    
+    def extract_emails_aggressive(self, text):
+        """More aggressive email extraction for hard-to-parse documents"""
+        emails = []
+        
+        # Multiple patterns for different email formats
+        patterns = [
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # Standard
+            r'[A-Za-z0-9._%+-]+\s*@\s*[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}',  # With spaces
+            r'[A-Za-z0-9._%+-]+\s*\[\s*at\s*\]\s*[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}',  # [at] format
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            emails.extend(matches)
+        
+        # Clean up emails
+        cleaned_emails = []
+        for email in emails:
+            # Remove spaces and normalize
+            cleaned = re.sub(r'\s+', '', email)
+            cleaned = cleaned.replace('[at]', '@').replace('(at)', '@')
+            
+            if self.is_valid_personal_email(cleaned):
+                cleaned_emails.append(cleaned)
+        
+        return list(set(cleaned_emails))
+    
+    def extract_names_aggressive(self, text):
+        """More aggressive name extraction for hard-to-parse documents"""
+        names = []
+        
+        # Look for name patterns near keywords
+        keywords = ['name', 'candidate', 'applicant', 'resume of', 'cv of', 'profile']
+        lines = text.split('\n')
+        
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            if any(keyword in line_lower for keyword in keywords):
+                # Check this line and surrounding lines
+                search_lines = lines[max(0, i-2):min(len(lines), i+3)]
+                for search_line in search_lines:
+                    # Extract potential names
+                    words = search_line.strip().split()
+                    if 2 <= len(words) <= 4:
+                        potential_name = ' '.join(words)
+                        if self.is_likely_person_name(potential_name):
+                            names.append(potential_name)
+        
+        # Look for capitalized sequences at document start
+        first_lines = '\n'.join(lines[:10])
+        name_patterns = [
+            r'\b([A-Z][a-z]{2,15}\s+[A-Z][a-z]{2,15})\b',  # First Last
+            r'\b([A-Z][a-z]{2,15}\s+[A-Z][a-z]{2,15}\s+[A-Z][a-z]{2,15})\b',  # First Middle Last
+        ]
+        
+        for pattern in name_patterns:
+            matches = re.findall(pattern, first_lines)
+            for match in matches:
+                if self.is_likely_person_name(match):
+                    names.append(match)
+        
+        return list(set(names))
+    
+    def extract_phones_aggressive(self, text):
+        """More aggressive phone extraction for hard-to-parse documents"""
+        phones = []
+        
+        # More flexible patterns
+        patterns = [
+            r'(\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})',  # Various formats
+            r'(\d{10})',  # Just 10 digits
+            r'(phone[:\s]*[\+\d\-\.\s\(\)]+)',  # After "phone:"
+            r'(mobile[:\s]*[\+\d\-\.\s\(\)]+)',  # After "mobile:"
+            r'(tel[:\s]*[\+\d\-\.\s\(\)]+)',  # After "tel:"
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                # Clean and validate
+                cleaned = re.sub(r'[^\d+]', '', match)
+                if cleaned and len(cleaned) >= 10:
+                    phones.append(match.strip())
+        
+        return list(set(phones))
+    
+    def validate_extracted_name(self, name):
+        """Validate if the extracted name is actually a person's name"""
+        if not name:
+            return False
+        
+        # Check against our existing validation
+        if not self.is_likely_person_name(name):
+            return False
+        
+        # Additional validation
+        words = name.split()
+        
+        # Must have at least 2 words
+        if len(words) < 2:
+            return False
+        
+        # Each word should be reasonable length
+        for word in words:
+            if len(word) < 2 or len(word) > 20:
+                return False
+        
+        # Should contain only alphabetic characters
+        if not all(word.isalpha() for word in words):
+            return False
+        
+        # Should be properly capitalized
+        if not all(word[0].isupper() for word in words):
+            return False
+        
+        return True
+    
+    def validate_extracted_email(self, email):
+        """Validate if the extracted email is actually valid"""
+        if not email:
+            return False
+        
+        # Basic format check
+        if '@' not in email or '.' not in email:
+            return False
+        
+        # Must have valid structure
+        try:
+            local, domain = email.rsplit('@', 1)
+            if not local or not domain:
+                return False
+            
+            # Domain must have at least one dot
+            if '.' not in domain:
+                return False
+            
+            # Local part should be reasonable
+            if len(local) < 2 or len(local) > 64:
+                return False
+            
+            # Domain should be reasonable
+            if len(domain) < 4 or len(domain) > 255:
+                return False
+            
+        except ValueError:
+            return False
+        
+        # Use our existing validation
+        return self.is_valid_personal_email(email)
+    
+    def validate_extracted_phone(self, phone):
+        """Validate if the extracted phone is actually a phone number"""
+        if not phone:
+            return False
+        
+        # Extract only digits
+        digits_only = re.sub(r'[^\d]', '', phone)
+        
+        # Must have reasonable number of digits
+        if len(digits_only) < 10 or len(digits_only) > 15:
+            return False
+        
+        # Should not be all same digits
+        if len(set(digits_only)) <= 2:
+            return False
+        
+        # Should not be sequential (like 1234567890)
+        if digits_only in ['1234567890', '0123456789', '9876543210']:
+            return False
+        
+        # For Indian numbers, first digit after country code should be 6-9
+        if phone.startswith('+91') and len(digits_only) >= 11:
+            first_mobile_digit = digits_only[2]  # After +91
+            if first_mobile_digit not in '6789':
+                return False
+        elif len(digits_only) == 10:
+            first_digit = digits_only[0]
+            if first_digit not in '6789':
+                return False
+        
+        return True
+
+    def parse_document(self, file_path):
+        """Parse document using docling and extract text"""
+        try:
+            result = self.converter.convert(file_path)
+            # Extract text from the document
+            if hasattr(result, 'text'):
+                text = result.text
+            elif hasattr(result, 'content'):
+                text = result.content
+            elif hasattr(result, 'document'):
+                text = str(result.document)
+            else:
+                text = str(result)
+            
+            return text
+        except Exception as e:
+            raise Exception(f"Failed to parse document: {str(e)}")
+    
+    def extract_candidate_info(self, file_path, filename):
+        """Extract all candidate information from a resume file"""
+        try:
+            # Parse document to get text
+            text = self.parse_document(file_path)
+            
+            # Extract information with multiple attempts
+            names = self.extract_names(text)
+            emails = self.extract_email_addresses(text)
+            phones = self.extract_phone_numbers(text)
+            
+            # Try harder to find missing information
+            if not names:
+                names = self.extract_names_aggressive(text)
+            
+            if not emails:
+                emails = self.extract_emails_aggressive(text)
+            
+            if not phones:
+                phones = self.extract_phones_aggressive(text)
+            
+            # Select best candidates for each field
+            full_name = self.select_best_name(names)
+            email = self.select_best_email(emails)
+            contact_number = self.select_best_phone(phones)
+            
+            # Validate the extracted information
+            valid_name = self.validate_extracted_name(full_name)
+            valid_email = self.validate_extracted_email(email)
+            valid_phone = self.validate_extracted_phone(contact_number)
+            
+            candidate_details = {
+                'fileName': filename,
+                'fullName': full_name if valid_name else None,
+                'email': email if valid_email else None,
+                'contactNumber': contact_number if valid_phone else None,
+                'allNames': names,
+                'allEmails': emails,
+                'allPhones': phones,
+                'rawText': text,
+                'parseStatus': 'success',
+                'uploadTimestamp': datetime.now().isoformat(),
+                'id': str(uuid.uuid4())
+            }
+            
+            # Check if all mandatory fields are extracted AND valid
+            missing_fields = []
+            if not valid_name or not full_name:
+                missing_fields.append('Valid Full Name')
+            if not valid_email or not email:
+                missing_fields.append('Valid Email')
+            if not valid_phone or not contact_number:
+                missing_fields.append('Valid Contact Number')
+            
+            if missing_fields:
+                candidate_details['parseStatus'] = 'failed'
+                candidate_details['failureReason'] = f'Missing or invalid mandatory fields: {", ".join(missing_fields)}'
+                # Set invalid fields to None
+                if not valid_name:
+                    candidate_details['fullName'] = None
+                if not valid_email:
+                    candidate_details['email'] = None
+                if not valid_phone:
+                    candidate_details['contactNumber'] = None
+            
+            return candidate_details
+            
+        except Exception as e:
+            return {
+                'fileName': filename,
+                'parseStatus': 'failed',
+                'failureReason': f'Parse error: {str(e)}',
+                'uploadTimestamp': datetime.now().isoformat(),
+                'id': str(uuid.uuid4())
+            }
+
     def extract_names_fallback(self, text):
         """Fallback name extraction method"""
         lines = text.split('\n')
@@ -415,78 +766,6 @@ class ResumeParser:
         
         unique_names.sort(key=get_position)
         return unique_names
-    
-    def parse_document(self, file_path):
-        """Parse document using docling and extract text"""
-        try:
-            result = self.converter.convert(file_path)
-            # Extract text from the document
-            if hasattr(result, 'text'):
-                text = result.text
-            elif hasattr(result, 'content'):
-                text = result.content
-            elif hasattr(result, 'document'):
-                text = str(result.document)
-            else:
-                text = str(result)
-            
-            return text
-        except Exception as e:
-            raise Exception(f"Failed to parse document: {str(e)}")
-    
-    def extract_candidate_info(self, file_path, filename):
-        """Extract all candidate information from a resume file"""
-        try:
-            # Parse document to get text
-            text = self.parse_document(file_path)
-            
-            # Extract information
-            names = self.extract_names(text)
-            emails = self.extract_email_addresses(text)
-            phones = self.extract_phone_numbers(text)
-            
-            # Select best candidates for each field
-            full_name = self.select_best_name(names)
-            email = emails[0] if emails else None
-            contact_number = self.select_best_phone(phones)
-            
-            candidate_details = {
-                'fileName': filename,
-                'fullName': full_name,
-                'email': email,
-                'contactNumber': contact_number,
-                'allNames': names,
-                'allEmails': emails,
-                'allPhones': phones,
-                'rawText': text,
-                'parseStatus': 'success',
-                'uploadTimestamp': datetime.now().isoformat(),
-                'id': str(uuid.uuid4())
-            }
-            
-            # Check if all mandatory fields are extracted
-            missing_fields = []
-            if not full_name:
-                missing_fields.append('Full Name')
-            if not email:
-                missing_fields.append('Email')
-            if not contact_number:
-                missing_fields.append('Contact Number')
-            
-            if missing_fields:
-                candidate_details['parseStatus'] = 'failed'
-                candidate_details['failureReason'] = f'Missing mandatory fields: {", ".join(missing_fields)}'
-            
-            return candidate_details
-            
-        except Exception as e:
-            return {
-                'fileName': filename,
-                'parseStatus': 'failed',
-                'failureReason': f'Parse error: {str(e)}',
-                'uploadTimestamp': datetime.now().isoformat(),
-                'id': str(uuid.uuid4())
-            }
 
 def is_valid_file_format(filename):
     """Check if file format is supported"""
