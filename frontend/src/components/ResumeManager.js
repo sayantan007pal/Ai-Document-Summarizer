@@ -126,10 +126,11 @@ const ResumeManager = () => {
                     onDragOver={(e) => e.preventDefault()}
                 >
                     <p>Drag & drop files here or click to select</p>
+                    <p className="supported-formats">Supported: PDF, DOC, DOCX files and ZIP archives containing resumes</p>
                     <input
                         type="file"
                         multiple
-                        accept=".pdf,.doc,.docx"
+                        accept=".pdf,.doc,.docx,.zip"
                         onChange={handleFileChange}
                         className="file-input"
                     />

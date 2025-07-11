@@ -302,23 +302,43 @@ class ResumeParser:
             
         return True
     
-    def select_best_name(self, names):
-        """Select the most likely name from a list of candidates"""
+    def select_best_name(self, names, formatted_text=None):
+        """Select the most likely name, prioritizing largest font size if available"""
         if not names:
             return None
         
-        # If names come from the enhanced extraction, they're already sorted by priority
-        # So we prioritize the first valid name, but still apply some filtering
-        
         # Filter out names that are clearly not person names
         filtered_names = [name for name in names if self.is_likely_person_name(name)]
-        
         if not filtered_names:
-            # If no names pass the filter, return the first name from the original list
-            # as the enhanced extraction already prioritized them
             return names[0] if names else None
         
-        # Return the first filtered name (highest priority from enhanced extraction)
+        # If formatted_text is available, select the name with the largest font size
+        if formatted_text:
+            largest_font = -1
+            best_name = None
+            for name in filtered_names:
+                for text_chunk, format_info in formatted_text.items():
+                    if name.lower() in text_chunk.lower() or any(part.lower() in text_chunk.lower() for part in name.split()):
+                        font_size = format_info.get('font_size')
+                        if font_size is not None:
+                            try:
+                                font_size_val = float(font_size)
+                                if font_size_val > largest_font:
+                                    largest_font = font_size_val
+                                    best_name = name
+                                elif font_size_val == largest_font:
+                                    # If font size is the same, prefer the one earlier in the document
+                                    if best_name:
+                                        best_line = format_info.get('line_number', 999)
+                                        curr_line = format_info.get('line_number', 999)
+                                        if curr_line < best_line:
+                                            best_name = name
+                            except Exception:
+                                continue
+            if best_name:
+                return best_name
+        
+        # Fallback: Return the first filtered name (highest priority from enhanced extraction)
         return filtered_names[0]
     
     def select_best_phone(self, phones):
@@ -702,7 +722,7 @@ class ResumeParser:
                 phones = self.extract_phones_aggressive(text)
             
             # Select best candidates for each field
-            full_name = self.select_best_name(names)
+            full_name = self.select_best_name(names, formatted_text)
             email = self.select_best_email(emails)
             contact_number = self.select_best_phone(phones)
             
@@ -937,6 +957,110 @@ def remove_duplicates_by_email(candidates):
             email_map[candidate['id']] = candidate
     
     return list(email_map.values())
+
+def extract_files_from_zip(zip_path, extract_to_dir):
+    """Extract supported files from ZIP archive"""
+    extracted_files = []
+    
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            # Get list of files in the ZIP
+            file_list = zip_ref.namelist()
+            
+            for file_name in file_list:
+                # Skip directories and hidden files
+                if file_name.endswith('/') or file_name.startswith('.') or '/' in file_name[:-1]:
+                    continue
+                
+                # Check if file has supported extension
+                if any(file_name.lower().endswith(ext) for ext in ['.pdf', '.doc', '.docx']):
+                    try:
+                        # Extract individual file
+                        zip_ref.extract(file_name, extract_to_dir)
+                        extracted_file_path = os.path.join(extract_to_dir, file_name)
+                        
+                        # Verify the file was extracted and is readable
+                        if os.path.exists(extracted_file_path) and os.path.getsize(extracted_file_path) > 0:
+                            extracted_files.append({
+                                'path': extracted_file_path,
+                                'original_name': file_name,
+                                'size': os.path.getsize(extracted_file_path)
+                            })
+                        
+                    except Exception as e:
+                        print(f"Failed to extract {file_name}: {str(e)}")
+                        continue
+        
+        return extracted_files
+        
+    except zipfile.BadZipFile:
+        raise Exception("Invalid ZIP file format")
+    except Exception as e:
+        raise Exception(f"Failed to extract ZIP file: {str(e)}")
+
+def process_zip_file(zip_file_path, original_filename):
+    """Process a ZIP file containing multiple resumes"""
+    temp_extract_dir = None
+    results = []
+    
+    try:
+        # Create temporary directory for extraction
+        temp_extract_dir = tempfile.mkdtemp()
+        
+        # Extract files from ZIP
+        extracted_files = extract_files_from_zip(zip_file_path, temp_extract_dir)
+        
+        if not extracted_files:
+            return [{
+                'fileName': original_filename,
+                'parseStatus': 'failed',
+                'failureReason': 'No supported files found in ZIP archive',
+                'uploadTimestamp': datetime.now().isoformat(),
+                'id': str(uuid.uuid4())
+            }]
+        
+        # Process each extracted file
+        for file_info in extracted_files:
+            try:
+                # Process the resume file
+                result = parser.extract_candidate_info(file_info['path'], file_info['original_name'])
+                
+                # Add ZIP source information
+                result['sourceZip'] = original_filename
+                result['extractedFrom'] = 'ZIP'
+                
+                results.append(result)
+                
+            except Exception as e:
+                # Add failed result for this file
+                results.append({
+                    'fileName': file_info['original_name'],
+                    'sourceZip': original_filename,
+                    'extractedFrom': 'ZIP',
+                    'parseStatus': 'failed',
+                    'failureReason': f'Parse error: {str(e)}',
+                    'uploadTimestamp': datetime.now().isoformat(),
+                    'id': str(uuid.uuid4())
+                })
+        
+        return results
+        
+    except Exception as e:
+        return [{
+            'fileName': original_filename,
+            'parseStatus': 'failed',
+            'failureReason': f'ZIP processing error: {str(e)}',
+            'uploadTimestamp': datetime.now().isoformat(),
+            'id': str(uuid.uuid4())
+        }]
+    
+    finally:
+        # Clean up temporary directory
+        if temp_extract_dir and os.path.exists(temp_extract_dir):
+            try:
+                shutil.rmtree(temp_extract_dir)
+            except Exception as e:
+                print(f"Failed to clean up temporary directory: {str(e)}")
 
 # Initialize parser
 parser = ResumeParser()

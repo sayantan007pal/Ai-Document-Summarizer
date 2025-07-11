@@ -39,6 +39,13 @@
     font-size: 18px;
 }
 
+.file-drop-zone .supported-formats {
+    font-size: 14px;
+    color: #6c757d;
+    font-style: italic;
+    margin-top: 10px;
+}
+
 .file-input {
     position: absolute;
     top: 0;

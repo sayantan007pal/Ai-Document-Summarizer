@@ -30,7 +30,11 @@ const FileUpload = ({ onTextParsed }) => {
 
     return (
         <div style={{ margin: '20px' }}>
-            <input type="file" onChange={handleFileChange} />
+            <input 
+                type="file" 
+                accept=".pdf,.doc,.docx,.zip"
+                onChange={handleFileChange} 
+            />
             <button onClick={handleUpload}>Upload</button>
         </div>
     );
